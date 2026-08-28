@@ -119,6 +119,7 @@ async function performSync({ force }) {
   for (const [key, group] of aggregateByName(candidates, {
     format: config.google.formatTemplate,
     audio: config.google.audioTemplate,
+    misc: config.google.miscTemplate,
   })) {
     const matches = byName.get(key);
 

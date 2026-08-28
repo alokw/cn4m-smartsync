@@ -3,7 +3,7 @@ import { log } from './log.js';
 import { getSheet, getReport, resolveColumns, cellValue } from './smartsheet.js';
 
 // Columns we may write. A blank title in .env switches one off.
-export const WRITE_FIELDS = ['version', 'processed', 'duration', 'status', 'notes', 'format', 'audio'];
+export const WRITE_FIELDS = ['version', 'processed', 'duration', 'status', 'notes', 'format', 'audio', 'misc'];
 
 export function wantedColumns() {
   const want = { name: config.smartsheet.nameColumn };

@@ -72,6 +72,7 @@ export const config = {
     // Composite columns, built from GOOGLE_*_TEMPLATE below.
     formatColumn: str('SMARTSHEET_FORMAT_COLUMN', ''),
     audioColumn: str('SMARTSHEET_AUDIO_COLUMN', ''),
+    miscColumn: str('SMARTSHEET_MISC_COLUMN', ''),
     scopes: str('SMARTSHEET_SCOPES', 'READ_SHEETS WRITE_SHEETS'),
   },
 
@@ -96,6 +97,7 @@ export const config = {
     // placeholder inside it is blank.
     formatTemplate: str('GOOGLE_FORMAT_TEMPLATE', '[{CODEC}][, {WIDTH} x {HEIGHT}][ @ {FPS}]'),
     audioTemplate: str('GOOGLE_AUDIO_TEMPLATE', '[{CH}ch ][{AUDIO}][ @ {RATE}k][, {BITS}bit]'),
+    miscTemplate: str('GOOGLE_MISC_TEMPLATE', '[{DURATION}][, {FILENAME}]'),
   },
 
   discord: {
