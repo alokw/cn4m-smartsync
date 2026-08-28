@@ -1,0 +1,16 @@
+{
+  "name": "cn4m-smartsync",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Sync asset metadata from a cn4m repo Google Sheet into Smartsheet",
+  "engines": { "node": ">=22" },
+  "scripts": {
+    "start": "node src/index.js",
+    "dev": "node --env-file=.env src/index.js",
+    "sync": "node --env-file=.env src/cli.js sync",
+    "sheets": "node --env-file=.env src/cli.js sheets",
+    "columns": "node --env-file=.env src/cli.js columns",
+    "test": "node --test test/*.test.js"
+  }
+}
