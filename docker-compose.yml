@@ -1,0 +1,17 @@
+services:
+  smartsync:
+    build: .
+    container_name: cn4m-smartsync
+    restart: unless-stopped
+    env_file: .env
+    ports:
+      # Must match the redirect URL registered on the Smartsheet app.
+      - "2646:2646"
+    volumes:
+      - ./data:/data
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://localhost:2646/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
