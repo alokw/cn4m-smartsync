@@ -1,13 +1,43 @@
 import { config, configProblems } from './config.js';
 import { log } from './log.js';
 import { fetchRows } from './gsheet.js';
-import { notifyUnmatched, notifyMultipleMatches } from './discord.js';
+import { notifyUnmatched, notifyMultipleMatches, notifyLocked, notifyFailure, notifyRecovery } from './discord.js';
 import { stateStore } from './store.js';
 import { updateRows, NotConnectedError } from './smartsheet.js';
 import { loadTarget, WRITE_FIELDS, enabledFields } from './target.js';
 import { selectForSync, advanceWatermark, aggregateByName, normalizeName, fingerprint } from './transform.js';
 
 let running = false;
+
+// A broken sync retries every SYNC_INTERVAL_SECONDS, so alerting on each tick
+// would have meant ~36 Discord messages during the three hours a single locked
+// row stalled the loop. Alert on the first failure, then at most hourly while it
+// persists, and once when it clears.
+const REALERT_AFTER_MS = 60 * 60 * 1000;
+let failure = null;   // { message, since, count, lastAlertedAt }
+
+async function reportFailure(message) {
+  const now = Date.now();
+
+  if (failure?.message === message) {
+    failure.count++;
+    if (now - failure.lastAlertedAt < REALERT_AFTER_MS) return;
+    failure.lastAlertedAt = now;
+    await notifyFailure(failure);
+    return;
+  }
+
+  // A different error is a different incident, even if the loop never recovered.
+  failure = { message, since: new Date().toISOString(), count: 1, lastAlertedAt: now };
+  await notifyFailure(failure);
+}
+
+async function reportRecovery() {
+  if (!failure) return;
+  const cleared = failure;
+  failure = null;
+  await notifyRecovery(cleared);
+}
 
 // Decides the cells to write for one matched row, skipping any value that is
 // already correct so an unchanged row never generates a Smartsheet write.
@@ -35,13 +65,20 @@ export async function runSync({ force = false } = {}) {
   running = true;
 
   try {
-    return await performSync({ force });
+    const result = await performSync({ force });
+    // performSync also reports failure without throwing -- a missing config
+    // pauses the loop rather than crashing it, and that is worth an alert too.
+    if (result.ok === false) await reportFailure(result.reason);
+    else await reportRecovery();
+    return result;
   } catch (err) {
     if (err instanceof NotConnectedError) {
       log.warn(err.message);
+      await reportFailure(err.message);
       return { ok: false, reason: 'not connected' };
     }
     log.error(`sync failed: ${err.message}`);
+    await reportFailure(`sync failed: ${err.message}`);
     return { ok: false, reason: err.message };
   } finally {
     running = false;
@@ -109,9 +146,20 @@ async function performSync({ force }) {
 
   // Grouped per source sheet: a report can span several, and each sheet takes
   // its own write request.
+  // loadTarget holds locked rows back so one of them cannot fail the whole batch
+  // write. Their names are still needed here: a source row landing on nothing but
+  // a locked row deserves saying so, rather than "no match found in smartsheet".
+  const lockedByName = new Map();
+  for (const row of target.locked) {
+    const key = normalizeName(row.name);
+    if (!key) continue;
+    lockedByName.set(key, (lockedByName.get(key) ?? 0) + 1);
+  }
+
   const updatesBySheet = new Map();
   const unmatched = [];
   const ambiguous = [];
+  const lockedSkipped = [];
   let unchanged = 0;
 
   // Several Google rows can share a NAME, so reduce each name to one set of
@@ -119,10 +167,17 @@ async function performSync({ force }) {
   for (const [key, group] of aggregateByName(candidates, {
     format: config.google.formatTemplate,
     audio: config.google.audioTemplate,
+    misc: config.google.miscTemplate,
   })) {
     const matches = byName.get(key);
 
     if (!matches?.length) {
+      if (lockedByName.has(key)) {
+        if (group.rows.some(mayNotify)) {
+          lockedSkipped.push({ name: group.rows[0].NAME, count: lockedByName.get(key) });
+        }
+        continue;
+      }
       for (const row of group.rows) {
         if (mayNotify(row)) unmatched.push(row.FILENAME || row.NAME || '(unnamed row)');
       }
@@ -150,10 +205,11 @@ async function performSync({ force }) {
   const updateCount = [...updatesBySheet.values()].reduce((n, rows) => n + rows.length, 0);
 
   if (config.dryRun) {
-    log.info(`DRY_RUN: would update ${updateCount} row(s) in ${target.kind} "${target.label}", ${unmatched.length} unmatched, ${ambiguous.length} ambiguous, ${unchanged} already current`);
+    log.info(`DRY_RUN: would update ${updateCount} row(s) in ${target.kind} "${target.label}", ${unmatched.length} unmatched, ${ambiguous.length} ambiguous, ${lockedSkipped.length} locked, ${unchanged} already current`);
     for (const name of unmatched) log.info(`DRY_RUN: ${name}: no match found in smartsheet`);
     for (const a of ambiguous) log.info(`DRY_RUN: ${a.name}: matched ${a.count} rows in smartsheet`);
-    return { ok: true, dryRun: true, target: target.label, newRows: candidates.length, updated: updateCount, unchanged, unmatched: unmatched.length, ambiguous: ambiguous.length };
+    for (const l of lockedSkipped) log.info(`DRY_RUN: ${l.name}: matched ${l.count} locked row(s), skipped`);
+    return { ok: true, dryRun: true, target: target.label, newRows: candidates.length, updated: updateCount, unchanged, unmatched: unmatched.length, ambiguous: ambiguous.length, locked: lockedSkipped.length };
   }
 
   if (updateCount) {
@@ -163,6 +219,7 @@ async function performSync({ force }) {
 
   await notifyUnmatched(unmatched);
   await notifyMultipleMatches(ambiguous);
+  await notifyLocked(lockedSkipped);
 
   // Only advance past rows we actually handled, so a mid-run failure retries them.
   const advanced = advanceWatermark(candidates.map((c) => c.row), state.watermark);
@@ -175,6 +232,7 @@ async function performSync({ force }) {
     unchanged,
     unmatched: unmatched.length,
     ambiguous: ambiguous.length,
+    locked: lockedSkipped.length,
   };
 
   await stateStore.write({

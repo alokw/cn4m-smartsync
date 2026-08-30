@@ -33,6 +33,36 @@ export const unmatchedLines = (filenames) =>
 export const multipleMatchLines = (entries) =>
   entries.map(({ name, count }) => `**${name}**: matched ${count} rows in smartsheet, all updated`);
 
+export const lockedLines = (entries) =>
+  entries.map(({ name, count }) =>
+    `**${name}**: matched ${count} locked row${count === 1 ? '' : 's'} in smartsheet, not updated`);
+
+// Enough of the error to identify it without pushing the message over Discord's
+// limit -- a Smartsheet 403 body is long, and the useful part is at the front.
+const MAX_DETAIL_CHARS = 1500;
+
+const detail = (message) =>
+  message.length > MAX_DETAIL_CHARS ? `${message.slice(0, MAX_DETAIL_CHARS - 1)}…` : message;
+
+// "2026-08-28T19:55:42.657Z" -> "2026-08-28 19:55:42 UTC"
+const stamp = (iso) => `${iso.replace('T', ' ').slice(0, 19)} UTC`;
+
+// A broken sync retries on every tick, so an alert per tick would have sent ~36
+// messages during the three hours a locked row stalled the loop. The repeat
+// alert therefore leads with the duration and the attempt count.
+export function failureLines({ message, since, count }) {
+  const lead = count > 1
+    ? `⚠️ **sync still failing** — ${count} attempts since ${stamp(since)}`
+    : `⚠️ **sync failed**`;
+  return [`${lead}
+\`\`\`
+${detail(message)}
+\`\`\``];
+}
+
+export const recoveryLines = ({ since, count }) =>
+  [`✅ **sync recovered** — back to normal after ${count} failed attempt${count === 1 ? '' : 's'} since ${stamp(since)}`];
+
 async function post(content) {
   const res = await fetch(config.discord.webhookUrl, {
     method: 'POST',
@@ -67,3 +97,17 @@ async function deliver(lines, what) {
 
 export const notifyUnmatched = (filenames) => deliver(unmatchedLines(filenames), 'unmatched row(s)');
 export const notifyMultipleMatches = (entries) => deliver(multipleMatchLines(entries), 'ambiguous match(es)');
+export const notifyLocked = (entries) => deliver(lockedLines(entries), 'locked row(s)');
+
+// Alerting must never be able to break the loop it is reporting on: a webhook
+// outage during an outage would otherwise replace the real error with its own.
+async function tell(lines, what) {
+  try {
+    await deliver(lines, what);
+  } catch (err) {
+    log.warn(`could not report ${what} to Discord: ${err.message}`);
+  }
+}
+
+export const notifyFailure = (failure) => tell(failureLines(failure), 'sync failure');
+export const notifyRecovery = (failure) => tell(recoveryLines(failure), 'sync recovery');

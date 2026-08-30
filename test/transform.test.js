@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  normalizeVersion, normalizeProcessed, normalizeDuration,
+  normalizeVersion, displayVersion, normalizeProcessed, normalizeDuration,
   selectNewRows, advanceWatermark, fingerprint,
 } from '../src/transform.js';
 import { parseCsvToObjects } from '../src/csv.js';
@@ -16,6 +16,17 @@ test('normalizeVersion drops the emoji and any underscore suffix', () => {
   assert.equal(normalizeVersion('v3'), 'v3');
   assert.equal(normalizeVersion(''), '');
   assert.equal(normalizeVersion(undefined), '');
+});
+
+test('displayVersion keeps the emoji but still drops the underscore suffix', () => {
+  assert.equal(displayVersion('☝️ v2'), '☝️ v2');
+  assert.equal(displayVersion('🆕 v01_hapaudio'), '🆕 v01');
+  assert.equal(displayVersion('☝️ v001_30fps_b'), '☝️ v001');
+  assert.equal(displayVersion('☝️v2'), '☝️ v2', 'a missing space is normalised to one');
+  assert.equal(displayVersion('v3'), 'v3', 'no emoji, nothing added');
+  assert.equal(displayVersion('☝️'), '', 'an emoji with no version is still empty');
+  assert.equal(displayVersion(''), '');
+  assert.equal(displayVersion(undefined), '');
 });
 
 test('normalizeProcessed accepts the sheet format and rejects junk', () => {
@@ -100,13 +111,13 @@ test('compareVersions orders numerically, not lexically', () => {
   assert.equal(compareVersions('v2', 'v02'), 0, 'v2 and v02 are the same version');
 });
 
-test('highestVersion reduces a group to its top version', () => {
+test('highestVersion reduces a group to its top version, emoji and all', () => {
   const rows = [{ VERSION: '🆕 v1' }, { VERSION: '☝️ v3' }, { VERSION: '🆕 v2' }];
-  assert.equal(highestVersion(rows), 'v3');
+  assert.equal(highestVersion(rows), '☝️ v3', 'the winning row keeps its own emoji');
 });
 
 test('highestVersion ignores blanks and copes with an all-blank group', () => {
-  assert.equal(highestVersion([{ VERSION: '' }, { VERSION: '☝️ v1' }]), 'v1');
+  assert.equal(highestVersion([{ VERSION: '' }, { VERSION: '☝️ v1' }]), '☝️ v1');
   assert.equal(highestVersion([{ VERSION: '' }]), '');
 });
 
@@ -133,11 +144,11 @@ test('aggregateByName reduces VERSION and PROCESSED independently', () => {
 
   const a = grouped.get('clip_a');
   assert.equal(a.rows.length, 3);
-  assert.equal(a.values.version, 'v3', 'highest version, from row 2');
+  assert.equal(a.values.version, '☝️ v3', 'highest version, from row 2');
   assert.equal(a.values.processed, '2026-06-02 08:00:00', 'latest timestamp, from row 3');
   assert.equal(a.values.duration, '00:00:02:00', 'duration follows the latest-processed row');
 
-  assert.equal(grouped.get('clip_b').values.version, 'v0');
+  assert.equal(grouped.get('clip_b').values.version, '🆕 v0');
 });
 
 test('aggregateByName matches names case-insensitively and skips nameless rows', () => {
@@ -147,7 +158,7 @@ test('aggregateByName matches names case-insensitively and skips nameless rows',
     { row: { NAME: '', VERSION: '🆕 v9', PROCESSED: '2026-06-01 12:00:00' } },
   ]);
   assert.equal(grouped.size, 1);
-  assert.equal(grouped.get('clip_a').values.version, 'v5');
+  assert.equal(grouped.get('clip_a').values.version, '☝️ v5');
 });
 
 test('a real group of encoding variants collapses to one version', () => {
@@ -161,11 +172,11 @@ test('a real group of encoding variants collapses to one version', () => {
     { VERSION: '☝️ v000n' },
     { VERSION: '🆕 v000' },
   ];
-  assert.equal(highestVersion(rows), 'v001');
+  assert.equal(highestVersion(rows), '☝️ v001');
 });
 
 test('underscore stripping cannot promote a variant above a real version', () => {
-  assert.equal(highestVersion([{ VERSION: '☝️ v001_hapaudio' }, { VERSION: '☝️ v002' }]), 'v002');
+  assert.equal(highestVersion([{ VERSION: '☝️ v001_hapaudio' }, { VERSION: '☝️ v002' }]), '☝️ v002');
 });
 
 import { selectForSync } from '../src/transform.js';
@@ -258,5 +269,28 @@ test('aggregate carries status, notes and the composites from the latest row', (
   assert.equal(values.notes, '🎬');
   assert.equal(values.format, 'NotchLC, 6912 x 3840 @ 30.000');
   assert.equal(values.audio, '2ch PCM @ 48000k, 16bit');
-  assert.equal(values.version, 'v2');
+  assert.equal(values.version, '🆕 v2');
+});
+
+const MISC = '[{DURATION}][, {FILENAME}]';
+
+test('the misc composite pairs duration with filename', () => {
+  assert.equal(renderTemplate(MISC, { DURATION: '00:00:30:00', FILENAME: 'clip_v001.mov' }), '00:00:30:00, clip_v001.mov');
+  assert.equal(renderTemplate(MISC, { DURATION: '', FILENAME: 'still_v001.png' }), 'still_v001.png', 'no dangling comma');
+  assert.equal(renderTemplate(MISC, { DURATION: '00:00:30:00', FILENAME: '' }), '00:00:30:00');
+  assert.equal(renderTemplate(MISC, {}), '', 'blank, so SKIP_BLANK_VALUES leaves the cell alone');
+});
+
+test('aggregate builds misc from the latest-processed row', () => {
+  const rows = [
+    { row: { NAME: 'a', VERSION: '🆕 v1', PROCESSED: '2026-06-01 10:00:00', DURATION: '00:00:01:00', FILENAME: 'a_v001.mov' } },
+    { row: { NAME: 'a', VERSION: '🆕 v2', PROCESSED: '2026-06-02 10:00:00', DURATION: '00:00:02:00', FILENAME: 'a_v002.mov' } },
+  ];
+  const { values } = aggregateByName(rows, { misc: MISC }).get('a');
+  assert.equal(values.misc, '00:00:02:00, a_v002.mov');
+});
+
+test('misc is empty when no template is configured', () => {
+  const rows = [{ row: { NAME: 'a', VERSION: '🆕 v1', PROCESSED: '2026-06-01 10:00:00', DURATION: '00:00:01:00', FILENAME: 'a.mov' } }];
+  assert.equal(aggregateByName(rows).get('a').values.misc, '');
 });

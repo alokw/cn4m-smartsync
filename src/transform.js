@@ -10,13 +10,29 @@ export function normalizeProcessed(raw) {
   return m ? `${m[1]} ${m[2]}` : null;
 }
 
-// VERSION arrives as "☝️ v2" / "🆕 v001_hapaudio". Drop the leading emoji, then
-// drop the first underscore and everything after it: suffixes like _hapaudio,
-// _30fps and _b are encoding variants of the same version, not higher versions,
-// so "v001_hapaudio" and "v001_30fps_b" both reduce to "v001".
+// VERSION arrives as "☝️ v2" / "🆕 v001_hapaudio". This is the *comparison
+// key*: drop the leading emoji, then drop the first underscore and everything
+// after it. Suffixes like _hapaudio, _30fps and _b are encoding variants of the
+// same version, not higher versions, so "v001_hapaudio" and "v001_30fps_b" both
+// reduce to "v001". The emoji is only dropped for ordering -- see displayVersion.
 export function normalizeVersion(raw) {
   if (!raw) return '';
   return raw.replace(/^[^\p{L}\p{N}]+/u, '').trim().split('_')[0];
+}
+
+// The emoji (or whatever other non-alphanumeric run) sits in front of the version.
+export function versionPrefix(raw) {
+  const m = /^[^\p{L}\p{N}]+/u.exec((raw ?? '').trim());
+  return m ? m[0].trim() : '';
+}
+
+// What is actually written to Smartsheet: the underscore suffix gone, but the
+// leading emoji put back, so "🆕 v001_hapaudio" writes as "🆕 v001".
+export function displayVersion(raw) {
+  const core = normalizeVersion(raw);
+  if (!core) return '';
+  const prefix = versionPrefix(raw);
+  return prefix ? `${prefix} ${core}` : core;
 }
 
 // DURATION is either a timecode ("00:03:00:00") or ms ("00:17:39.067").
@@ -98,13 +114,19 @@ export function compareVersions(a, b) {
 
 // A NAME can appear on several Google Sheet rows (different screens, or a
 // re-process). Each field is reduced across the whole group independently.
+// Compares on the normalized key, but returns the winning row's display form so
+// its emoji survives into Smartsheet.
 export function highestVersion(rows) {
   let best = '';
+  let display = '';
   for (const row of rows) {
     const v = normalizeVersion(row.VERSION);
-    if (v && (best === '' || compareVersions(v, best) > 0)) best = v;
+    if (v && (best === '' || compareVersions(v, best) > 0)) {
+      best = v;
+      display = displayVersion(row.VERSION);
+    }
   }
-  return best;
+  return display;
 }
 
 export function highestProcessed(rows) {
@@ -144,6 +166,7 @@ export function aggregateByName(candidates, templates = {}) {
         notes: String(latest.NOTES ?? '').trim(),
         format: renderTemplate(templates.format, latest),
         audio: renderTemplate(templates.audio, latest),
+        misc: renderTemplate(templates.misc, latest),
       },
     });
   }

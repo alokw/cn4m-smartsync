@@ -157,6 +157,7 @@ All settings live in `.env`. The ones worth knowing:
 | `SMARTSHEET_VERSION_COLUMN` | `VERSION` | Written on match. Blank disables it. |
 | `SMARTSHEET_PROCESSED_COLUMN` | `PROCESSED` | Written on match. Blank disables it. |
 | `SMARTSHEET_DURATION_COLUMN` | *(blank)* | Off. Set a title to re-enable. |
+| `SMARTSHEET_MISC_COLUMN` | *(blank)* | Composite, built from `GOOGLE_MISC_TEMPLATE`. |
 | `SKIP_BLANK_VALUES` | `true` | Never blank a Smartsheet cell because the source is empty. |
 | `DRY_RUN` | `false` | Log intended changes, write nothing. |
 
@@ -177,7 +178,8 @@ column is an `.env` change rather than a code change.
 | `GOOGLE_PROCESSED_COLUMN` | `PROCESSED` | **Required.** Decides which rows are new. |
 | `GOOGLE_VERSION_COLUMN` | `VERSION` | Optional. |
 | `GOOGLE_DURATION_COLUMN` | `DURATION` | Optional, and only used if the Smartsheet duration column is set. |
-| `GOOGLE_FILENAME_COLUMN` | `FILENAME` | Optional. Used in the Discord no-match message. |
+| `GOOGLE_FILENAME_COLUMN` | `FILENAME` | Optional. Used in the Discord no-match message, and in `GOOGLE_MISC_TEMPLATE`. |
+| `GOOGLE_MISC_TEMPLATE` | `[{DURATION}][, {FILENAME}]` | Composite written to `SMARTSHEET_MISC_COLUMN`. |
 
 A missing **required** column stops the sync with an error listing every header
 the sheet actually has. A missing optional one only warns, and that field stays
@@ -229,11 +231,12 @@ under `watermark` it would survive until a new source row appeared.
 
 ## Data handling
 
-- **`VERSION`** arrives as `☝️ v2` / `🆕 v001_hapaudio`. The leading emoji is
-  stripped, then the first underscore and everything after it: suffixes like
-  `_hapaudio`, `_30fps` and `_b` are encoding variants of the same version, not
-  higher versions. So `v001_30fps_b` → `v001`. A suffix without an underscore is
-  kept as part of the version (`v000n` stays `v000n`).
+- **`VERSION`** arrives as `☝️ v2` / `🆕 v001_hapaudio`. The first underscore and
+  everything after it is dropped: suffixes like `_hapaudio`, `_30fps` and `_b`
+  are encoding variants of the same version, not higher versions. So
+  `🆕 v001_30fps_b` → `🆕 v001`. A suffix without an underscore is kept as part of
+  the version (`v000n` stays `v000n`). The leading emoji is ignored when ranking
+  versions but kept on the value written to Smartsheet.
 - **`PROCESSED`** is normalised to `YYYY-MM-DD HH:MM:SS` before writing.
 - **`DURATION`** is currently switched off (`SMARTSHEET_DURATION_COLUMN=`). When
   enabled it passes both shapes through untouched — timecode (`00:03:00:00`) and
@@ -266,14 +269,68 @@ best cut available.
 ```bash
 docker compose logs -f                   # follow
 docker compose up -d --force-recreate    # pick up .env changes
+docker compose up -d --build             # pick up CODE changes
 docker compose down                      # stop
 npm test                                 # unit tests, no credentials needed
+
+# ...or run the tests without a local node install:
+docker run --rm -v "$PWD:/app" -w /app node:22-alpine node --test 'test/*.test.js'
 ```
 
-> **`.env` changes need a recreate, not a restart.** Compose reads `env_file`
-> when it *creates* the container, so `docker compose restart` reuses the old
-> environment and your edit appears to be ignored. Always use
-> `docker compose up -d --force-recreate` after editing `.env`.
+> **`.env` changes need a recreate. Code changes need a rebuild.** These are two
+> different things, and only one of them carries the source:
+>
+> | You changed | Command | Why |
+> | --- | --- | --- |
+> | `.env` | `docker compose up -d --force-recreate` | Compose reads `env_file` when it *creates* the container, so `docker compose restart` reuses the old environment. |
+> | `src/` | `docker compose up -d --build` | The Dockerfile bakes `src/` into the image. Without `--build`, Compose reuses the existing image, so a freshly recreated container happily runs old code. |
+>
+> Editing both and then only recreating is the confusing case: the new settings
+> load into a process whose logic knows nothing about them, which reads as the
+> config being silently ignored. `--build` covers both, so prefer it when unsure.
+
+### Deploying a code change
+
+Run `docker compose up -d --build`, then read the line the sync loop logs on boot:
+
+```
+INFO  writing columns: version, processed, status, notes, format, audio, misc
+```
+
+That list is built from whichever `SMARTSHEET_*_COLUMN` titles are set, so it is
+the fastest proof that the new code *and* the new config are both live. A column
+you just configured missing from that list means the build did not take.
+
+It syncs **on boot** — the first pass runs before the first
+`SYNC_INTERVAL_SECONDS` wait — so there is no need to sit out the interval. In
+`reconcile` mode that pass reconsiders every row rather than only rows newer than
+the watermark, so a newly enabled column backfills across the whole sheet at
+once. Expect `updated` in the `sync complete` line to jump on that first pass and
+fall back to `0` afterwards, since unchanged cells are never rewritten.
+
+To look before you leap:
+
+```bash
+DRY_RUN=true docker compose up -d --build    # logs every intended change, writes nothing
+curl 'http://localhost:2646/sync?force=1'    # run a pass now instead of waiting
+```
+
+A missing Smartsheet column fails loudly rather than skipping quietly: the error
+names every column title the sheet actually has. Titles match case-insensitively,
+so only a real spelling difference bites.
+
+### Is the container running what I think it is?
+
+```bash
+docker ps --filter name=cn4m-smartsync --format '{{.Image}} | {{.Status}}'
+docker image ls | grep smartsync                              # image age
+docker exec cn4m-smartsync grep -c misc /app/src/target.js    # 0 = stale code
+docker exec cn4m-smartsync printenv | grep SMARTSHEET_        # what the process really sees
+```
+
+For the third one, swap `misc` for any symbol from the change you are chasing.
+A container created two minutes ago can still be running a two-day-old image —
+its age tells you nothing about the code inside it.
 
 State lives in `./data` (mounted into the container):
 
