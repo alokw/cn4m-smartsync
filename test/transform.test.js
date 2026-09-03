@@ -381,3 +381,33 @@ test('the real case: a stripped stem no longer supplies the whole row', () => {
   assert.equal(values.misc, '00:00:30:00, clip_v002.mov');
   assert.equal(values.processed, '2026-06-01 11:00:00', 'PROCESSED still spans the whole group');
 });
+
+// An "n" suffix is a real version, not an encoding variant: v000n is documented
+// as ranking above v000, and the plain-beats-variant tiebreak must not undo that.
+test('an n-suffixed version still outranks the plain one', () => {
+  assert.ok(compareVersions('v002n', 'v002') > 0, 'v002n beats v002');
+  assert.ok(compareVersions('v010n', 'v010') > 0, 'and with multi-digit versions');
+  assert.ok(compareVersions('v002n', 'v003') < 0, 'but it is not a free pass past a higher number');
+});
+
+test('pickRepresentative prefers v002n over v002, and over v002_hapaudio', () => {
+  const plain = asset({ VERSION: '☝️ v002', FILENAME: 'a_v002.mov' });
+  const nSuffix = asset({ VERSION: '☝️ v002n', FILENAME: 'a_v002n.mov' });
+  const variant = asset({ VERSION: '☝️ v002_hapaudio', FILENAME: 'a_v002_hapaudio.mov', WIDTH: '16', HEIGHT: '16' });
+
+  assert.equal(pickRepresentative([plain, nSuffix]).FILENAME, 'a_v002n.mov');
+  assert.equal(pickRepresentative([nSuffix, plain]).FILENAME, 'a_v002n.mov', 'regardless of order');
+  assert.equal(pickRepresentative([variant, nSuffix, plain]).FILENAME, 'a_v002n.mov', 'v002n is a higher version than both');
+});
+
+test('a higher version wins even when the lower one is a bigger movie', () => {
+  const big = asset({ VERSION: '☝️ v002', FILENAME: 'a_v002.mov', WIDTH: '6912', HEIGHT: '3840' });
+  const smallerButNewer = asset({ VERSION: '☝️ v002n', FILENAME: 'a_v002n.mov', WIDTH: '16', HEIGHT: '16' });
+  assert.equal(pickRepresentative([big, smallerButNewer]).FILENAME, 'a_v002n.mov', 'version outranks resolution');
+});
+
+test('within v002n, the variant still loses to the plain n-version', () => {
+  const nPlain = asset({ VERSION: '☝️ v002n', FILENAME: 'a_v002n.mov' });
+  const nVariant = asset({ VERSION: '☝️ v002n_hapaudio', FILENAME: 'a_v002n_hapaudio.mov', WIDTH: '16', HEIGHT: '16' });
+  assert.equal(pickRepresentative([nVariant, nPlain]).FILENAME, 'a_v002n.mov');
+});
