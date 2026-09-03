@@ -138,6 +138,75 @@ export function highestProcessed(rows) {
   return best;
 }
 
+// A NAME covers several files: the graded movie, a stripped audio stem, a still
+// export. Extensions decide which is which, so the deliverable can be told apart
+// from the ancillary assets produced alongside it.
+const KINDS = {
+  mov: 'video', mp4: 'video', mxf: 'video', m4v: 'video', avi: 'video', mkv: 'video', webm: 'video',
+  png: 'image', jpg: 'image', jpeg: 'image', tif: 'image', tiff: 'image', exr: 'image', dpx: 'image', webp: 'image',
+  wav: 'audio', aif: 'audio', aiff: 'audio', mp3: 'audio', aac: 'audio', flac: 'audio', m4a: 'audio',
+};
+
+// An unrecognised extension sits above audio, not below it: a stem is known to
+// be ancillary, whereas an unfamiliar format might well be the deliverable.
+const KIND_RANK = { video: 3, image: 2, other: 1, audio: 0 };
+
+export function mediaKind(filename) {
+  const name = String(filename ?? '').trim().toLowerCase();
+  const ext = name.includes('.') ? name.split('.').pop() : '';
+  return KINDS[ext] ?? 'other';
+}
+
+// WIDTH x HEIGHT, used to prefer the full-size render over a 16x16 proxy.
+// Anything unparseable counts as zero so it loses to a row that has real ones.
+export function pixelCount(row) {
+  const side = (v) => {
+    const n = Number.parseInt(String(v ?? '').replace(/[^\d]/g, ''), 10);
+    return Number.isNaN(n) ? 0 : n;
+  };
+  return side(row.WIDTH) * side(row.HEIGHT);
+}
+
+// "v002_hapaudio" is an encoding variant of v002, not a version of its own.
+const isVariant = (version) => String(version ?? '').includes('_');
+
+// Ranks two rows already known to share a version.
+function compareTiebreak(a, b) {
+  const plain = (isVariant(b.VERSION) ? 1 : 0) - (isVariant(a.VERSION) ? 1 : 0);
+  if (plain !== 0) return plain;
+
+  const kind = KIND_RANK[mediaKind(a.FILENAME)] - KIND_RANK[mediaKind(b.FILENAME)];
+  if (kind !== 0) return kind;
+
+  const pixels = pixelCount(a) - pixelCount(b);
+  if (pixels !== 0) return pixels > 0 ? 1 : -1;
+
+  const ap = normalizeProcessed(a.PROCESSED) ?? '';
+  const bp = normalizeProcessed(b.PROCESSED) ?? '';
+  if (ap !== bp) return ap > bp ? 1 : -1;
+  return 0;
+}
+
+// Picks the row whose values describe the asset anyone actually cares about.
+//
+// Every field except VERSION and PROCESSED describes one specific file, and this
+// used to take them from the latest-processed row -- which handed the whole group
+// to whichever ancillary export happened to finish last, typically the audio stem
+// stripped out after the movie was done.
+//
+// Highest VERSION still decides first. Within that version, in order: a plain
+// version beats an encoding variant (v002 over v002_hapaudio), video beats stills
+// beats audio, the larger frame beats a proxy, and only then the latest
+// timestamp. Ties keep the earlier row, so the order is stable.
+export function pickRepresentative(rows) {
+  if (rows.length === 0) return undefined;
+
+  const top = normalizeVersion(highestVersion(rows));
+  const contenders = top ? rows.filter((row) => normalizeVersion(row.VERSION) === top) : rows;
+
+  return contenders.reduce((best, row) => (compareTiebreak(best, row) >= 0 ? best : row));
+}
+
 // Groups new rows by NAME and reduces each group to the values to write.
 export function aggregateByName(candidates, templates = {}) {
   const groups = new Map();
@@ -151,22 +220,23 @@ export function aggregateByName(candidates, templates = {}) {
 
   const out = new Map();
   for (const [key, rows] of groups) {
-    const processed = highestProcessed(rows);
-    // Only VERSION and PROCESSED have a meaningful "highest". Everything else
-    // describes a particular file, so it comes from the latest-processed row.
-    const latest = rows.find((r) => normalizeProcessed(r.PROCESSED) === processed) ?? rows[0];
+    // Only PROCESSED has a meaningful "highest" across the whole group -- it
+    // records when the asset was last touched, whichever file did the touching.
+    // Everything else describes one particular file, so it all comes from the
+    // one representative row rather than from several rows at once.
+    const best = pickRepresentative(rows);
 
     out.set(key, {
       rows,
       values: {
-        version: highestVersion(rows),
-        processed,
-        duration: normalizeDuration(latest.DURATION),
-        status: String(latest.STATUS ?? '').trim(),
-        notes: String(latest.NOTES ?? '').trim(),
-        format: renderTemplate(templates.format, latest),
-        audio: renderTemplate(templates.audio, latest),
-        misc: renderTemplate(templates.misc, latest),
+        version: displayVersion(best.VERSION),
+        processed: highestProcessed(rows),
+        duration: normalizeDuration(best.DURATION),
+        status: String(best.STATUS ?? '').trim(),
+        notes: String(best.NOTES ?? '').trim(),
+        format: renderTemplate(templates.format, best),
+        audio: renderTemplate(templates.audio, best),
+        misc: renderTemplate(templates.misc, best),
       },
     });
   }

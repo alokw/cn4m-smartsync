@@ -249,20 +249,35 @@ under `watermark` it would survive until a new source row appeared.
 
 ### Several Google rows, one NAME
 
-A `NAME` often appears on more than one row — different screens, or a
-re-process. Rows are grouped by `NAME` and **each column is reduced across the
-group independently**:
+A `NAME` often appears on more than one row — different screens, a re-process,
+or the ancillary assets produced alongside the deliverable: a stripped audio
+stem, a still export, a small proxy. Rows are grouped by `NAME`, and everything
+except `PROCESSED` is taken from a single **representative row**, so the values
+always describe one real file rather than a blend of several.
 
 | Column | Rule |
 | --- | --- |
-| `VERSION` | Underscore suffix stripped, then the highest by natural ordering: `v2` > `v01`, `v10` > `v9`, `v001` > `v000n` |
-| `PROCESSED` | Latest timestamp |
-| `DURATION` | Value from the latest-processed row (when enabled) |
+| `PROCESSED` | Latest timestamp across the whole group |
+| everything else | Taken from the representative row |
 
-Because they are reduced independently, the version written and the timestamp
-written can come from *different* rows. That is deliberate: the newest timestamp
-records when the asset was last touched, while the highest version records the
-best cut available.
+The representative is chosen in this order:
+
+| # | Rule | Example |
+| --- | --- | --- |
+| 1 | Highest `VERSION` — underscore suffix stripped, natural ordering | `v2` > `v01`, `v10` > `v9`, `v001` > `v000n` |
+| 2 | A plain version over an encoding variant | `v002` over `v002_hapaudio` |
+| 3 | Video, then stills, then audio | `clip_v002.mov` over `clip_v002.wav` |
+| 4 | Larger frame | `1920 x 1080` over `16 x 16` |
+| 5 | Latest `PROCESSED` | tie-break of last resort |
+
+`PROCESSED` spanning the whole group is deliberate: it records when the asset was
+last touched, whichever file did the touching, while the other columns describe
+the file worth looking at. So the timestamp written and the version written can
+still come from *different* rows.
+
+An unrecognised extension ranks above audio but below video and stills — a stem
+is known to be ancillary, whereas an unfamiliar format may well be the
+deliverable.
 
 ## Operating
 

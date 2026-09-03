@@ -146,7 +146,7 @@ test('aggregateByName reduces VERSION and PROCESSED independently', () => {
   assert.equal(a.rows.length, 3);
   assert.equal(a.values.version, '☝️ v3', 'highest version, from row 2');
   assert.equal(a.values.processed, '2026-06-02 08:00:00', 'latest timestamp, from row 3');
-  assert.equal(a.values.duration, '00:00:02:00', 'duration follows the latest-processed row');
+  assert.equal(a.values.duration, '00:00:03:00', 'duration follows the representative row, not the latest');
 
   assert.equal(grouped.get('clip_b').values.version, '🆕 v0');
 });
@@ -293,4 +293,91 @@ test('aggregate builds misc from the latest-processed row', () => {
 test('misc is empty when no template is configured', () => {
   const rows = [{ row: { NAME: 'a', VERSION: '🆕 v1', PROCESSED: '2026-06-01 10:00:00', DURATION: '00:00:01:00', FILENAME: 'a.mov' } }];
   assert.equal(aggregateByName(rows).get('a').values.misc, '');
+});
+
+import { pickRepresentative, mediaKind, pixelCount } from '../src/transform.js';
+
+const asset = (over = {}) => ({
+  NAME: 'clip', VERSION: '☝️ v002', PROCESSED: '2026-06-01 10:00:00',
+  FILENAME: 'clip_v002.mov', WIDTH: '1920', HEIGHT: '1080', ...over,
+});
+
+test('mediaKind sorts deliverables from ancillary exports', () => {
+  assert.equal(mediaKind('clip_v002.mov'), 'video');
+  assert.equal(mediaKind('clip_v002.PNG'), 'image', 'case-insensitive');
+  assert.equal(mediaKind('clip_v002.wav'), 'audio');
+  assert.equal(mediaKind('clip_v002.notch'), 'other', 'an unknown extension is not audio');
+  assert.equal(mediaKind('no_extension'), 'other');
+  assert.equal(mediaKind(''), 'other');
+  assert.equal(mediaKind(undefined), 'other');
+});
+
+test('pixelCount multiplies the frame, and survives junk', () => {
+  assert.equal(pixelCount({ WIDTH: '1920', HEIGHT: '1080' }), 2073600);
+  assert.equal(pixelCount({ WIDTH: '6912 px', HEIGHT: '3840' }), 26542080, 'units are ignored');
+  assert.equal(pixelCount({ WIDTH: '', HEIGHT: '1080' }), 0);
+  assert.equal(pixelCount({}), 0);
+});
+
+test('a plain version beats an encoding variant', () => {
+  const plain = asset({ VERSION: '☝️ v002', FILENAME: 'clip_v002.mov' });
+  const hap = asset({ VERSION: '☝️ v002_hapaudio', FILENAME: 'clip_v002_hapaudio.mov', PROCESSED: '2026-06-09 10:00:00' });
+  assert.equal(pickRepresentative([hap, plain]).FILENAME, 'clip_v002.mov', 'even though the variant is newer');
+  assert.equal(pickRepresentative([plain, hap]).FILENAME, 'clip_v002.mov', 'order does not matter');
+});
+
+test('the movie beats the audio stem stripped out of it', () => {
+  const mov = asset({ FILENAME: 'clip_v002.mov' });
+  const wav = asset({ FILENAME: 'clip_v002.wav', WIDTH: '', HEIGHT: '', PROCESSED: '2026-06-09 10:00:00' });
+  assert.equal(pickRepresentative([wav, mov]).FILENAME, 'clip_v002.mov', 'the stem is processed later, and still loses');
+});
+
+test('the full-size render beats a tiny proxy of the same version', () => {
+  const proxy = asset({ FILENAME: 'clip_v002_proxy.mov', WIDTH: '16', HEIGHT: '16' });
+  const full = asset({ FILENAME: 'clip_v002.mov', WIDTH: '1920', HEIGHT: '1080' });
+  assert.equal(pickRepresentative([proxy, full]).FILENAME, 'clip_v002.mov');
+  // Same again with no underscore in either name, so resolution alone decides.
+  const small = asset({ FILENAME: 'a.mov', WIDTH: '16', HEIGHT: '16' });
+  const large = asset({ FILENAME: 'b.mov', WIDTH: '100', HEIGHT: '100' });
+  assert.equal(pickRepresentative([small, large]).FILENAME, 'b.mov');
+});
+
+test('version outranks every other rule', () => {
+  const oldMovie = asset({ VERSION: '☝️ v003', FILENAME: 'clip_v003.mov', WIDTH: '6912', HEIGHT: '3840' });
+  const newStem = asset({ VERSION: '☝️ v004', FILENAME: 'clip_v004.wav', WIDTH: '', HEIGHT: '' });
+  assert.equal(pickRepresentative([oldMovie, newStem]).FILENAME, 'clip_v004.wav', 'a newer version wins regardless of kind');
+});
+
+test('the latest timestamp is the last resort, not the first', () => {
+  const older = asset({ FILENAME: 'a.mov', PROCESSED: '2026-06-01 10:00:00' });
+  const newer = asset({ FILENAME: 'b.mov', PROCESSED: '2026-06-09 10:00:00' });
+  assert.equal(pickRepresentative([older, newer]).FILENAME, 'b.mov', 'identical in every other respect');
+});
+
+test('pickRepresentative copes with empty and versionless groups', () => {
+  assert.equal(pickRepresentative([]), undefined);
+  const noVersion = [{ VERSION: '', FILENAME: 'a.wav' }, { VERSION: '', FILENAME: 'b.mov' }];
+  assert.equal(pickRepresentative(noVersion).FILENAME, 'b.mov', 'still ranks by kind');
+});
+
+test('the real case: a stripped stem no longer supplies the whole row', () => {
+  // The movie is processed first, then the audio is stripped out of it. Before,
+  // the .wav was the latest-processed row and supplied duration, format and misc.
+  const candidates = [
+    { row: { NAME: 'clip', VERSION: '☝️ v002', PROCESSED: '2026-06-01 10:00:00', DURATION: '00:00:30:00',
+             FILENAME: 'clip_v002.mov', CODEC: 'NotchLC', WIDTH: '6912', HEIGHT: '3840', FPS: '30.000' } },
+    { row: { NAME: 'clip', VERSION: '☝️ v002_hapaudio', PROCESSED: '2026-06-01 11:00:00', DURATION: '00:00:30.012',
+             FILENAME: 'clip_v002_hapaudio.wav', CODEC: '', WIDTH: '', HEIGHT: '', FPS: '',
+             AUDIO: 'PCM', RATE: '48000', BITS: '16', CH: '2' } },
+  ];
+
+  const { values } = aggregateByName(candidates, {
+    format: FORMAT, audio: AUDIO, misc: '[{DURATION}][, {FILENAME}]',
+  }).get('clip');
+
+  assert.equal(values.version, '☝️ v002');
+  assert.equal(values.duration, '00:00:30:00', 'the movie duration, not the stem');
+  assert.equal(values.format, 'NotchLC, 6912 x 3840 @ 30.000', 'was blank when the stem won');
+  assert.equal(values.misc, '00:00:30:00, clip_v002.mov');
+  assert.equal(values.processed, '2026-06-01 11:00:00', 'PROCESSED still spans the whole group');
 });
