@@ -1,5 +1,6 @@
 import { config, configProblems } from './config.js';
 import { log } from './log.js';
+import { statusUpdate, syncMessage } from './status.js';
 import { fetchRows } from './gsheet.js';
 import { notifyUnmatched, notifyMultipleMatches, notifyLocked, notifyFailure, notifyRecovery } from './discord.js';
 import { stateStore } from './store.js';
@@ -24,12 +25,14 @@ async function reportFailure(message) {
     if (now - failure.lastAlertedAt < REALERT_AFTER_MS) return;
     failure.lastAlertedAt = now;
     await notifyFailure(failure);
+    statusUpdate(`Sync still failing after ${failure.count} attempts`, 'error');
     return;
   }
 
   // A different error is a different incident, even if the loop never recovered.
   failure = { message, since: new Date().toISOString(), count: 1, lastAlertedAt: now };
   await notifyFailure(failure);
+  statusUpdate('Sync failed', 'error');
 }
 
 async function reportRecovery() {
@@ -37,6 +40,7 @@ async function reportRecovery() {
   const cleared = failure;
   failure = null;
   await notifyRecovery(cleared);
+  statusUpdate('Sync recovered', 'working');
 }
 
 // Decides the cells to write for one matched row, skipping any value that is
@@ -117,7 +121,7 @@ async function performSync({ force }) {
 
   if (firstRun) {
     const advanced = advanceWatermark(records, state.watermark);
-    log.info(`first run: ${candidates.length} existing row(s) seen, nothing written. Watermark set to ${advanced.watermark}.`);
+    log.event(`first run: ${candidates.length} existing row(s) seen, nothing written. Watermark set to ${advanced.watermark}.`);
     log.info('Only rows processed after this point will sync. Use "Run sync now (force)" in the UI to backfill instead.');
     await stateStore.write({
       ...state, ...advanced, initialized: true,
@@ -214,7 +218,7 @@ async function performSync({ force }) {
 
   if (updateCount) {
     for (const [sheetId, rows] of updatesBySheet) await updateRows(sheetId, rows);
-    log.info(`updated ${updateCount} row(s) across ${updatesBySheet.size} sheet(s)`);
+    log.event(`updated ${updateCount} row(s) across ${updatesBySheet.size} sheet(s)`);
   }
 
   await notifyUnmatched(unmatched);
@@ -241,6 +245,7 @@ async function performSync({ force }) {
     lastResult: result,
   });
 
-  log.info(`sync complete: ${JSON.stringify(result)}`);
+  log.event(`sync complete: ${JSON.stringify(result)}`);
+  statusUpdate(syncMessage(result));
   return result;
 }

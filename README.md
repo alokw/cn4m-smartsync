@@ -159,6 +159,8 @@ All settings live in `.env`. The ones worth knowing:
 | `SMARTSHEET_DURATION_COLUMN` | *(blank)* | Off. Set a title to re-enable. |
 | `SMARTSHEET_MISC_COLUMN` | *(blank)* | Composite, built from `GOOGLE_MISC_TEMPLATE`. |
 | `SKIP_BLANK_VALUES` | `true` | Never blank a Smartsheet cell because the source is empty. |
+| `STATUS_URL` | `http://localhost:2640/suite/status` | cn4m status endpoint. Empty disables updates — see below. |
+| `STATUS_APP` | `smartsync` | The `app=` name cn4m files the updates under. |
 | `DRY_RUN` | `false` | Log intended changes, write nothing. |
 
 Smartsheet column titles are matched case-insensitively; if one is missing, the
@@ -364,8 +366,74 @@ Both are gitignored. `tokens.json` is written `0600`.
 | `/sheets` | List your reports and sheets, with their ids |
 | `/columns` | Google Sheet headers vs the configured mapping |
 | `/sync` | Run a pass immediately (`?force=1` to bypass first-run) |
+| `/log` | Recent activity, newest first (`?all=1` for per-pass detail) |
 | `/watermark` | Move the watermark. **POST only** — see below |
 | `/health` | Health check |
+
+## Watching what it does
+
+The status page carries an **Activity** feed — the last dozen things the sync
+actually did, with timestamps, so you can see the state of play without opening
+`docker compose logs`. <http://localhost:2646/log> shows more of the same.
+
+Every pass narrates its progress, so an unfiltered feed is mostly per-tick
+chatter. `/log` therefore defaults to the **notable** lines: anything that went
+wrong, plus the ones that report something happening — a write, a Discord post,
+a watermark move, a restart. `?all=1` shows everything the process has logged.
+
+The feed lives in memory and holds the last 300 lines, so a restart starts it
+again. It is a "what just happened" panel, not a record: `state.json` is what
+durably remembers where the sync stands.
+
+## Telling cn4m what happened
+
+Set `STATUS_URL` and every pass that changes something posts a one-line update:
+
+```
+POST http://<cn4m-host>:2640/suite/status
+app=smartsync&message=Synced+5+items+to+smartsheet&level=working
+```
+
+Only passes that actually wrote something send anything — a quiet pass stays
+quiet, so the endpoint sees traffic when there is news rather than once every
+five minutes forever. Rows that could not be written are mentioned in passing:
+`Synced 5 items to smartsheet (3 unmatched, 1 locked)`. A sync that breaks sends
+`Sync failed` at `level=error`, and `Sync recovered` when it comes back — on the
+same schedule as the Discord alerts, so a long outage is one message, not one per
+tick.
+
+### localhost means the container
+
+`STATUS_URL` defaults to `http://localhost:2640/suite/status`, which is right
+when smartsync runs directly on the same machine as cn4m. **Inside Docker,
+`localhost` is the container itself**, not the machine running Docker, so that
+default cannot reach a cn4m on the host. Use whichever applies:
+
+| Where cn4m runs | `STATUS_URL` |
+| --- | --- |
+| On the Docker host | `http://host.docker.internal:2640/suite/status` |
+| As another container | `http://<its service name>:2640/suite/status` |
+| Same machine, no Docker | `http://localhost:2640/suite/status` |
+
+`docker-compose.yml` maps `host.docker.internal` to the host gateway, so the
+first form works on Linux as well as Docker Desktop. If a localhost URL fails
+from inside a container, the log says all this rather than just reporting a
+refused connection.
+
+### When cn4m is not there
+
+A failing endpoint is left alone rather than retried every pass: after a failure
+updates pause for 60 seconds, then 2, 4, 8 minutes and so on up to 30, and the
+first success resets it. So an unset, wrong, or temporarily down cn4m costs one
+attempt and a single log line, not a broken request every five minutes. An HTTP
+error such as a 404 backs off the same way a refused connection does.
+
+Updates are fire-and-forget and swallow their errors, so a cn4m that is slow,
+down, or not there at all cannot delay or interrupt a sync. A failure is logged
+once at `WARN`, then at `DEBUG` until it recovers. Setting `STATUS_URL` empty
+disables the whole thing. In-flight updates get a moment to finish on shutdown,
+which is what makes the update from the last pass before `docker stop` actually
+arrive.
 
 ## Resetting the watermark
 

@@ -92,7 +92,7 @@ async function deliver(lines, what) {
   }
 
   for (const content of batchLines(lines)) await post(content);
-  log.info(`reported ${lines.length} ${what} to Discord`);
+  log.event(`reported ${lines.length} ${what} to Discord`);
 }
 
 export const notifyUnmatched = (filenames) => deliver(unmatchedLines(filenames), 'unmatched row(s)');

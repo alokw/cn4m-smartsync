@@ -9,6 +9,10 @@ services:
       - "2646:2646"
     volumes:
       - ./data:/data
+    # Lets STATUS_URL reach a cn4m running on the Docker host, on Linux as well
+    # as Docker Desktop.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     healthcheck:
       test: ["CMD", "node", "-e", "fetch('http://localhost:2646/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
       interval: 30s

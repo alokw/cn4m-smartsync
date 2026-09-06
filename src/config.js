@@ -104,6 +104,16 @@ export const config = {
     webhookUrl: required('DISCORD_WEBHOOK_URL'),
   },
 
+  // Status updates to cn4m, the parent system. Unlike every other setting, an
+  // EMPTY value is meaningful here: STATUS_URL= switches updates off, while
+  // leaving it unset takes the default.
+  status: {
+    url: process.env.STATUS_URL === undefined
+      ? 'http://localhost:2640/suite/status'
+      : process.env.STATUS_URL.trim(),
+    app: str('STATUS_APP', 'smartsync'),
+  },
+
   // Never blank out a Smartsheet cell because the Google Sheet cell is empty
   // (348 of the current rows have no DURATION -- stills).
   skipBlankValues: bool('SKIP_BLANK_VALUES', true),

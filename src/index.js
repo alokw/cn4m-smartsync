@@ -2,6 +2,7 @@ import { config, configProblems } from './config.js';
 import { log } from './log.js';
 import { startServer } from './server.js';
 import { runSync } from './sync.js';
+import { flushStatus } from './status.js';
 
 const server = startServer();
 
@@ -18,16 +19,19 @@ async function tick() {
   if (!stopping) timer = setTimeout(tick, config.syncIntervalSeconds * 1000);
 }
 
-log.info(`starting sync loop, every ${config.syncIntervalSeconds}s`);
+log.event(`starting sync loop, every ${config.syncIntervalSeconds}s`);
 tick();
 
-function shutdown(signal) {
+async function shutdown(signal) {
   log.info(`${signal} received, shutting down`);
   stopping = true;
   clearTimeout(timer);
+  // Do not hang forever on a keep-alive connection. Longer than flushStatus is
+  // allowed to take, and still inside Docker's 10s grace before SIGKILL.
+  setTimeout(() => process.exit(0), 9000).unref();
+  // Let the last pass's status update reach cn4m before the process goes away.
+  await flushStatus();
   server.close(() => process.exit(0));
-  // Do not hang forever on a keep-alive connection.
-  setTimeout(() => process.exit(0), 5000).unref();
 }
 
 process.on('SIGTERM', () => shutdown('SIGTERM'));

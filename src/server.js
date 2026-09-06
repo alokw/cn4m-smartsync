@@ -9,6 +9,7 @@ import { runSync } from './sync.js';
 import { csvUrl, authMode, fetchRows, fetchRawRows, googleColumns } from './gsheet.js';
 import { advanceWatermark } from './transform.js';
 import { enabledFields } from './target.js';
+import { recentEvents, eventCounts } from './events.js';
 
 const pendingStates = new Set();
 
@@ -40,6 +41,25 @@ a.btn, button { display:inline-block; font:inherit; font-weight:550; padding:.6r
 a.primary { background:var(--fg); color:var(--bg); border-color:var(--fg); }
 ul { margin:.3rem 0; padding-left:1.2rem; } li { margin:.2rem 0; }
 </style></head><body><main>${body}</main></body></html>`;
+}
+
+const LEVEL_COLOUR = { error: 'var(--bad)', warn: '#b26a00', info: 'var(--muted)', debug: 'var(--muted)' };
+
+// "2026-09-03T21:43:23.048Z" -> "21:43:23" (or the date too, if not today)
+function when(iso) {
+  const today = new Date().toISOString().slice(0, 10);
+  return iso.slice(0, 10) === today ? iso.slice(11, 19) : `${iso.slice(0, 10)} ${iso.slice(11, 19)}`;
+}
+
+function activityFeed(events) {
+  if (events.length === 0) return '<p style="margin:0;color:var(--muted)">Nothing yet.</p>';
+
+  return `<div style="font:13px ui-monospace,SFMono-Regular,Menlo,monospace;line-height:1.9">${
+    events.map((e) => `<div style="display:flex;gap:.7rem;align-items:baseline">
+      <span style="color:var(--muted);white-space:nowrap">${esc(when(e.at))}</span>
+      <span style="color:${LEVEL_COLOUR[e.level] ?? 'var(--muted)'};text-transform:uppercase;font-size:11px;width:3.2rem;flex:none">${esc(e.level)}</span>
+      <span style="word-break:break-word">${esc(e.message)}</span>
+    </div>`).join('')}</div>`;
 }
 
 async function statusPage() {
@@ -111,6 +131,12 @@ async function statusPage() {
       </form>
     </div>
 
+    <h2>Activity</h2>
+    <div class="card">
+      ${activityFeed(recentEvents({ limit: 12 }))}
+      <p style="margin:.9rem 0 0;font-size:.85rem"><a href="/log">Full log &rarr;</a></p>
+    </div>
+
     <h2>Actions</h2>
     <p>
       ${auth.connected
@@ -128,8 +154,28 @@ async function statusPage() {
       <dt><a href="/columns">/columns</a></dt><dd>Google Sheet headers vs the configured mapping</dd>
       <dt><a href="/sync">/sync</a></dt><dd>run a pass now &middot; <code>?force=1</code> bypasses first-run</dd>
       <dt><code>/watermark</code></dt><dd>POST only &middot; <code>?mode=skip|arm|set|backfill</code></dd>
+      <dt><a href="/log">/log</a></dt><dd>recent activity &middot; <code>?all=1</code> includes per-pass detail</dd>
       <dt><a href="/health">/health</a></dt><dd>health check</dd>
     </dl></div>
+  `);
+}
+
+function logPage(all) {
+  const counts = eventCounts();
+  const events = recentEvents({ limit: 200, notableOnly: !all });
+
+  return page(`
+    <h1>Activity</h1>
+    <p class="sub">The last ${counts.total} log line(s) this process has produced,
+      newest first. Held in memory only, so a restart starts the list again.</p>
+
+    <p>
+      <a class="btn${all ? '' : ' primary'}" href="/log">Notable (${counts.notable})</a>
+      <a class="btn${all ? ' primary' : ''}" href="/log?all=1">Everything (${counts.total})</a>
+    </p>
+
+    <div class="card">${activityFeed(events)}</div>
+    <p><a class="btn" href="/">&larr; Back</a></p>
   `);
 }
 
@@ -286,7 +332,7 @@ async function handle(req, res, url) {
       }
 
       await stateStore.write(next);
-      log.info(`watermark ${mode}: ${state.watermark ?? 'unset'} -> ${next.watermark ?? 'unset'}`);
+      log.event(`watermark ${mode}: ${state.watermark ?? 'unset'} -> ${next.watermark ?? 'unset'}`);
 
       if ((req.headers.accept ?? '').includes('application/json')) {
         return send(res, 200, JSON.stringify({ ok: true, mode, watermark: next.watermark }), 'application/json');
@@ -294,6 +340,9 @@ async function handle(req, res, url) {
       res.writeHead(303, { Location: '/' });
       return res.end();
     }
+
+    case '/log':
+      return send(res, 200, logPage(url.searchParams.get('all') === '1'));
 
     case '/columns':
       return send(res, 200, await columnsPage());
